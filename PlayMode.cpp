@@ -1,5 +1,7 @@
 #include "PlayMode.hpp"
 
+#include "DrawLines.hpp"
+#include "PathFont.hpp"
 #include "gl_errors.hpp"
 
 #include <glm/gtc/type_ptr.hpp>
@@ -10,7 +12,9 @@
 
 namespace {
 
-constexpr float BeatInterval = 0.5f; //120bpm beat grid, for judgement; the metronome ticks sparser
+constexpr float BeatInterval = 0.5f;  //120bpm beat grid
+constexpr float HitWindow = 0.1f;     //a press within +-this of a beat counts as that beat
+constexpr uint32_t EnteringBeats = 6; //3s countdown before the first round
 
 //HSV(h, 1, 1) -> RGB for h in [0,1)
 glm::vec3 hue_to_rgb(float h) {
@@ -40,6 +44,33 @@ Sound::Sample make_pluck(float freq) {
 	return Sound::Sample(data);
 }
 
+//width of a string in DrawLines units (1 unit == glyph height), mirroring DrawLines::draw_text's advance
+float text_width(std::string const &text) {
+	float w = 0.0f;
+	uint32_t start = 0;
+	while (start < text.size()) {
+		uint32_t end = start;
+		uint32_t glyph = -1U;
+		while (end < text.size()) {
+			end += 1;
+			auto f = PathFont::font.glyph_map.find(text.substr(start, end - start));
+			if (f == PathFont::font.glyph_map.end()) {
+				end -= 1;
+				break;
+			}
+			glyph = f->second;
+		}
+		if (glyph == -1U) {
+			end += 1;
+			w += 0.6f; //tofu advance, same as DrawLines
+		} else {
+			w += PathFont::font.glyph_widths[glyph];
+		}
+		start = end;
+	}
+	return w;
+}
+
 } //namespace
 
 PlayMode::PlayMode() : rng(std::random_device{}()) {
@@ -57,11 +88,11 @@ PlayMode::~PlayMode() {
 	glDeleteVertexArrays(1, &empty_vao);
 }
 
-Sound::Sample PlayMode::make_beat_sample() {
-	//kick drum: sine with a 150->50Hz pitch sweep and fast decay
+Sound::Sample PlayMode::make_beat_sample(float pitch) {
+	//kick drum: sine with a pitch sweep and fast decay; 'pitch' scales the sweep (150->50Hz at 1.0)
 	constexpr uint32_t N = 48000 / 5; //0.2 seconds
 	std::vector< float > data(N);
-	const float f0 = 50.0f, f1 = 100.0f, k = 30.0f;
+	const float f0 = 50.0f * pitch, f1 = 100.0f * pitch, k = 30.0f;
 	for (uint32_t i = 0; i < N; ++i) {
 		float t = float(i) / 48000.0f;
 		//phase is the integral of f0 + f1 * exp(-k * t):
@@ -73,7 +104,7 @@ Sound::Sample PlayMode::make_beat_sample() {
 }
 
 void PlayMode::spawn_ripple(glm::vec2 const &pos, float amp) {
-	ripples.push_back({pos, time, amp, hue_to_rgb(hue_dist(rng))});
+	ripples.push_back({pos, time, amp, hue_to_rgb(uniform_dist(rng))});
 	if (ripples.size() > RippleProgram::MaxRipples) ripples.pop_front();
 
 	//x position picks the note from the grid; pan follows x:
@@ -81,46 +112,124 @@ void PlayMode::spawn_ripple(glm::vec2 const &pos, float amp) {
 	Sound::play(note_samples[note], 0.5f, pos.x * 2.0f - 1.0f);
 }
 
-bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size) {
+void PlayMode::start_round() {
+	round_beat = 0;
+	round_failed = false;
+	player_hits.fill(false);
 
-	if (evt.type == SDL_EVENT_KEY_DOWN) {
+	//pick 2-5 of the 8 beats:
+	std::uniform_int_distribution< uint32_t > count_dist(2, 5);
+	uint32_t k = count_dist(rng);
+	pattern.fill(false);
+	std::array< uint32_t, PhraseBeats > order = {0, 1, 2, 3, 4, 5, 6, 7};
+	std::shuffle(order.begin(), order.end(), rng);
+	for (uint32_t i = 0; i < k; ++i) pattern[order[i]] = true;
+}
+
+void PlayMode::on_beat() {
+	if (state == State::Entering && beat_count >= EnteringBeats) {
+		state = State::Playing;
+		start_round();
+	}
+
+	bool downbeat = false;
+	if (state == State::Playing) {
+		if (round_beat >= 2 * PhraseBeats) { //round over: check the reproduction
+			bool ok = !round_failed;
+			for (uint32_t i = 0; i < PhraseBeats; ++i) {
+				if (pattern[i] != player_hits[i]) { ok = false; break; }
+			}
+			score = (ok ? score + 1 : 0);
+			start_round();
+		}
+		downbeat = (round_beat % PhraseBeats == 0);
+	}
+
+	//phrase downbeats get a higher-pitched kick so the 8-beat boundary stays audible:
+	if (downbeat) Sound::play(accent_sample, 1.0f);
+	else if (beat_count % 2 == 0) Sound::play(beat_sample, 1.0f);
+
+	if (state == State::Playing) {
+		if (round_beat < PhraseBeats && pattern[round_beat]) {
+			//demo cue: ripple + note up high, at a random x
+			spawn_ripple(glm::vec2(0.2f + 0.6f * uniform_dist(rng), 0.65f), 1.0f);
+		}
+		++round_beat;
+	}
+}
+
+void PlayMode::press(glm::vec2 const &pos) {
+	//snap to the closest beat on the grid:
+	float offset = time - last_beat_at;
+	uint32_t closest = round_beat - 1;
+	float err = offset;
+	if (offset > BeatInterval * 0.5f) {
+		closest = round_beat;
+		err = BeatInterval - offset;
+	}
+	if (closest < PhraseBeats || closest >= 2 * PhraseBeats) return; //input only during the second phrase
+	spawn_ripple(pos, 1.0f);
+
+	uint32_t b = closest - PhraseBeats;
+	if (err <= HitWindow && pattern[b] && !player_hits[b]) {
+		player_hits[b] = true;
+	} else {
+		round_failed = true; //off-grid, wrong beat, or double press
+	}
+}
+
+bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &) {
+	if (evt.type != SDL_EVENT_KEY_DOWN) return false;
+
+	if (evt.key.key == SDLK_ESCAPE) {
+		if (state != State::PreGame) {
+			state = State::PreGame;
+			return true;
+		}
+		return false;
+	}
+
+	switch (state) {
+	case State::PreGame: //any other key starts the game
+		state = State::Entering;
+		entering_started_at = time;
+		beat_count = 0;
+		beat_timer = 0.0f;
+		score = 0;
+		return true;
+	case State::Entering:
+		return true; //countdown swallows keys
+	case State::Playing: {
 		int lane = -1;
 		if (evt.key.key == SDLK_D) lane = 0;
 		else if (evt.key.key == SDLK_F) lane = 1;
 		else if (evt.key.key == SDLK_J) lane = 2;
 		else if (evt.key.key == SDLK_K) lane = 3;
-		else if (evt.key.key == SDLK_SPACE) {
-			//random position in the central half of the screen:
-			glm::vec2 pos(0.25f + 0.5f * hue_dist(rng), 0.25f + 0.5f * hue_dist(rng));
-			spawn_ripple(pos, 1.0f);
-			return true;
-		}
 		if (lane >= 0) {
-			spawn_ripple(glm::vec2((float(lane) + 0.5f) / 4.0f, 0.35f), 1.0f);
+			press(glm::vec2((float(lane) + 0.5f) / 4.0f, 0.35f));
+			return true;
+		} else if (evt.key.key == SDLK_SPACE) {
+			press(glm::vec2(0.25f + 0.5f * uniform_dist(rng), 0.25f + 0.5f * uniform_dist(rng)));
 			return true;
 		}
-	} else if (evt.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-		//mouse position -> 0..1 fraction, lower-left origin:
-		glm::vec2 pos(
-			evt.button.x / float(window_size.x),
-			1.0f - evt.button.y / float(window_size.y)
-		);
-		pos = glm::clamp(pos, 0.0f, 1.0f);
-		spawn_ripple(pos, 1.0f);
-		return true;
+		return false;
 	}
-
+	}
 	return false;
 }
 
 void PlayMode::update(float elapsed) {
 	time += elapsed;
 
-	//metronome ticks every other beat (1.0s), '+=' so that extra time within one frame wont accumulate to the next tick
-	beat_timer -= elapsed;
-	if (beat_timer <= 0.0f) {
-		beat_timer += 2.0f * BeatInterval;
-		Sound::play(beat_sample, 1.0f);
+	//run the beat clock outside of PreGame ('+=' so the grid doesn't drift):
+	if (state != State::PreGame) {
+		beat_timer -= elapsed;
+		if (beat_timer <= 0.0f) {
+			last_beat_at = time + beat_timer; //exact beat moment; beat_timer <= 0 here
+			beat_timer += BeatInterval;
+			on_beat();
+			++beat_count;
+		}
 	}
 
 	//cull ripples that have faded to invisibility:
@@ -168,5 +277,35 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 		glUseProgram(0);
 	}
 
+	{ //HUD text:
+		float aspect = float(drawable_size.x) / float(drawable_size.y);
+		DrawLines lines(glm::mat4(
+			1.0f / aspect, 0.0f, 0.0f, 0.0f,
+			0.0f, 1.0f, 0.0f, 0.0f,
+			0.0f, 0.0f, 1.0f, 0.0f,
+			0.0f, 0.0f, 0.0f, 1.0f
+		));
+
+		//centers text horizontally at (0, y) with glyph height h:
+		auto draw_centered = [&](std::string const &text, float y, float h) {
+			float w = h * text_width(text);
+			lines.draw_text(text, glm::vec3(-0.5f * w, y, 0.0f),
+				glm::vec3(h, 0.0f, 0.0f), glm::vec3(0.0f, h, 0.0f),
+				glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+		};
+
+		if (state == State::PreGame) {
+			draw_centered("PRESS ANY KEY TO START", -0.04f, 0.08f);
+		} else if (state == State::Entering) {
+			float remaining = EnteringBeats * BeatInterval - (time - entering_started_at);
+			draw_centered(std::to_string(std::max(1, int(std::ceil(remaining)))), -0.2f, 0.4f);
+		} else { //Playing
+			lines.draw_text("SCORE " + std::to_string(score),
+				glm::vec3(-aspect + 0.05f, 0.92f, 0.0f),
+				glm::vec3(0.06f, 0.0f, 0.0f), glm::vec3(0.0f, 0.06f, 0.0f),
+				glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+			draw_centered(round_beat - 1 < PhraseBeats ? "LISTEN" : "REPEAT", 0.84f, 0.06f);
+		}
+	}
 	GL_ERRORS();
 }
