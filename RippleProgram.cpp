@@ -22,12 +22,19 @@ RippleProgram::RippleProgram() {
 		"uniform float ripple_start[16];\n"
 		"uniform float ripple_amp[16];\n"
 		"uniform vec3 ripple_color[16];\n"
+		"uniform uint strip_mask;\n"
 		"out vec4 fragColor;\n"
 		"void main() {\n"
 		//	pixelation: snap fragment position to a coarse grid
 		"	float cell = 14.0;\n"
 		"	vec2 frag = (floor(gl_FragCoord.xy / cell) + 0.5) * cell;\n"
-		"	vec3 e = vec3(0.0);\n"
+		//	background: 8 vertical strips; lit ones are white
+		"	uint strip = uint(frag.x / drawable_size.x * 8.0);\n"
+		"	vec3 base = ((strip_mask >> strip) & 1u) != 0u ? vec3(1.0) : vec3(0.0);\n"
+		//	ripples composite OVER the background: total energy is the alpha,
+		//	 color is the energy-weighted average
+		"	float e = 0.0;\n"
+		"	vec3 tint = vec3(0.0);\n"
 		"	for (int i = 0; i < 16; ++i) {\n"
 		"		if (i >= ripple_count) break;\n"
 		"		float age = time - ripple_start[i];\n"
@@ -38,9 +45,12 @@ RippleProgram::RippleProgram() {
 		"		float w = (1.0 + floor(age * 1.5)) * cell;\n"
 		"		float ring = step(abs(d - radius), w * 0.5);\n"
 		"		float fade = exp(-2.0 * age);\n"
-		"		e += ring * fade * ripple_amp[i] * ripple_color[i];\n"
+		"		float contrib = ring * fade * ripple_amp[i];\n"
+		"		e += contrib;\n"
+		"		tint += contrib * ripple_color[i];\n"
 		"	}\n"
-		"	fragColor = vec4(clamp(e, 0.0, 1.0), 1.0);\n"
+		"	vec3 ripple_rgb = tint / max(e, 1e-4);\n"
+		"	fragColor = vec4(mix(base, ripple_rgb, clamp(e, 0.0, 1.0)), 1.0);\n"
 		"}\n"
 	);
 
@@ -51,6 +61,7 @@ RippleProgram::RippleProgram() {
 	ripple_start_float = glGetUniformLocation(program, "ripple_start[0]");
 	ripple_amp_float = glGetUniformLocation(program, "ripple_amp[0]");
 	ripple_color_vec3 = glGetUniformLocation(program, "ripple_color[0]");
+	strip_mask_uint = glGetUniformLocation(program, "strip_mask");
 }
 
 RippleProgram::~RippleProgram() {

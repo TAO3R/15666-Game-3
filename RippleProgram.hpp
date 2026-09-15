@@ -24,4 +24,5 @@ struct RippleProgram {
 	GLuint ripple_start_float = 0; //array of MaxRipples float, spawn time in seconds
 	GLuint ripple_amp_float = 0;   //array of MaxRipples float, brightness multiplier
 	GLuint ripple_color_vec3 = 0;  //array of MaxRipples vec3, per-ripple color
+	GLuint strip_mask_uint = 0;    //bit i: vertical strip i of 8 is lit white
 };

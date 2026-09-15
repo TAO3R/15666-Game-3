@@ -115,6 +115,7 @@ void PlayMode::spawn_ripple(glm::vec2 const &pos, float amp) {
 void PlayMode::start_round() {
 	round_beat = 0;
 	round_failed = false;
+	strip_mask = 0;
 	player_hits.fill(false);
 
 	//pick 2-5 of the 8 beats:
@@ -151,8 +152,9 @@ void PlayMode::on_beat() {
 
 	if (state == State::Playing) {
 		if (round_beat < PhraseBeats && pattern[round_beat]) {
-			//demo cue: ripple + note up high, at a random x
-			spawn_ripple(glm::vec2(0.2f + 0.6f * uniform_dist(rng), 0.65f), 1.0f);
+			//demo cue: light the beat's strip, ripple + note centered on it
+			strip_mask |= 1u << round_beat;
+			spawn_ripple(glm::vec2((float(round_beat) + 0.5f) / float(PhraseBeats), 0.65f), 1.0f);
 		}
 		++round_beat;
 	}
@@ -173,6 +175,7 @@ void PlayMode::press(glm::vec2 const &pos) {
 	uint32_t b = closest - PhraseBeats;
 	if (err <= HitWindow && pattern[b] && !player_hits[b]) {
 		player_hits[b] = true;
+		strip_mask &= ~(1u << b); //accurate hit turns the strip back off
 	} else {
 		round_failed = true; //off-grid, wrong beat, or double press
 	}
@@ -184,6 +187,7 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &) {
 	if (evt.key.key == SDLK_ESCAPE) {
 		if (state != State::PreGame) {
 			state = State::PreGame;
+			strip_mask = 0;
 			return true;
 		}
 		return false;
@@ -264,6 +268,7 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 			++i;
 		}
 		glUniform1i(ripple_program.ripple_count_int, GLint(i));
+		glUniform1ui(ripple_program.strip_mask_uint, strip_mask);
 		if (i > 0) {
 			glUniform2fv(ripple_program.ripple_center_vec2, GLsizei(i), glm::value_ptr(centers[0]));
 			glUniform1fv(ripple_program.ripple_start_float, GLsizei(i), starts);
@@ -286,12 +291,20 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 			0.0f, 0.0f, 0.0f, 1.0f
 		));
 
-		//centers text horizontally at (0, y) with glyph height h:
-		auto draw_centered = [&](std::string const &text, float y, float h) {
-			float w = h * text_width(text);
-			lines.draw_text(text, glm::vec3(-0.5f * w, y, 0.0f),
+		//text gets a black drop shadow so it reads on both black and white strips:
+		const float ofs = 2.0f / drawable_size.y;
+		auto draw_text = [&](std::string const &text, glm::vec3 const &anchor, float h) {
+			lines.draw_text(text, anchor + glm::vec3(ofs, -ofs, 0.0f),
+				glm::vec3(h, 0.0f, 0.0f), glm::vec3(0.0f, h, 0.0f),
+				glm::u8vec4(0x00, 0x00, 0x00, 0xff));
+			lines.draw_text(text, anchor,
 				glm::vec3(h, 0.0f, 0.0f), glm::vec3(0.0f, h, 0.0f),
 				glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+		};
+
+		//centers text horizontally at (0, y) with glyph height h:
+		auto draw_centered = [&](std::string const &text, float y, float h) {
+			draw_text(text, glm::vec3(-0.5f * h * text_width(text), y, 0.0f), h);
 		};
 
 		if (state == State::PreGame) {
@@ -300,10 +313,7 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 			float remaining = EnteringBeats * BeatInterval - (time - entering_started_at);
 			draw_centered(std::to_string(std::max(1, int(std::ceil(remaining)))), -0.2f, 0.4f);
 		} else { //Playing
-			lines.draw_text("SCORE " + std::to_string(score),
-				glm::vec3(-aspect + 0.05f, 0.92f, 0.0f),
-				glm::vec3(0.06f, 0.0f, 0.0f), glm::vec3(0.0f, 0.06f, 0.0f),
-				glm::u8vec4(0xff, 0xff, 0xff, 0xff));
+			draw_text("SCORE " + std::to_string(score), glm::vec3(-aspect + 0.05f, 0.92f, 0.0f), 0.06f);
 			draw_centered(round_beat - 1 < PhraseBeats ? "LISTEN" : "REPEAT", 0.84f, 0.06f);
 		}
 	}

@@ -50,6 +50,7 @@ struct PlayMode : Mode {
 	static constexpr uint32_t PhraseBeats = 8;
 	std::array< bool, PhraseBeats > pattern;
 	std::array< bool, PhraseBeats > player_hits;
+	uint32_t strip_mask = 0; //bit i: strip for beat i is lit
 	uint32_t round_beat = 0; //next beat to fire within the round
 	bool round_failed = false;
 	uint32_t score = 0;
