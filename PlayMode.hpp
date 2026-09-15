@@ -39,6 +39,11 @@ struct PlayMode : Mode {
 	RippleProgram ripple_program;
 	GLuint empty_vao = 0;
 
-	//procedurally generated key sounds, one per lane (no asset files needed):
-	std::vector< Sound::Sample > lane_samples;
+	//procedurally generated notes; screen width is a pitch grid, one note per cell:
+	std::vector< Sound::Sample > note_samples;
+
+	//120bpm metronome:
+	static Sound::Sample make_beat_sample();
+	Sound::Sample beat_sample = make_beat_sample();
+	float beat_timer = 0.0f; //counts down to the next beat
 };

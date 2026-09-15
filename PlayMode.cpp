@@ -10,6 +10,8 @@
 
 namespace {
 
+constexpr float BeatInterval = 0.5f; //120bpm beat grid, for judgement; the metronome ticks sparser
+
 //HSV(h, 1, 1) -> RGB for h in [0,1)
 glm::vec3 hue_to_rgb(float h) {
 	float r = std::abs(h * 6.0f - 3.0f) - 1.0f;
@@ -18,21 +20,33 @@ glm::vec3 hue_to_rgb(float h) {
 	return glm::clamp(glm::vec3(r, g, b), 0.0f, 1.0f);
 }
 
+//Karplus-Strong plucked string through a soft-clip "amp": cheap electric guitar
+// ref: https://users.soe.ucsc.edu/~karplus/papers/digitar.pdf
+Sound::Sample make_pluck(float freq) {
+	constexpr uint32_t N = 48000; //1 second
+	const uint32_t L = std::max(2u, uint32_t(48000.0f / freq + 0.5f)); //string period in samples
+	std::vector< float > line(L);
+	std::mt19937 rng(0xC0FFEE);
+	std::uniform_real_distribution< float > noise(-1.0f, 1.0f);
+	for (float &v : line) v = noise(rng);
+
+	std::vector< float > data(N);
+	for (uint32_t i = 0; i < N; ++i) {
+		uint32_t j = i % L;
+		data[i] = line[j];
+		line[j] = 0.996f * 0.5f * (line[j] + line[(j + 1) % L]); //damped feedback controls sustain
+	}
+	for (float &v : data) v = std::tanh(2.5f * v); //overdriven amp
+	return Sound::Sample(data);
+}
+
 } //namespace
 
 PlayMode::PlayMode() : rng(std::random_device{}()) {
-	//procedurally generate a short beep per lane (C5 D5 E5 G5):
-	const float freqs[4] = {523.25f, 587.33f, 659.25f, 783.99f};
-	constexpr uint32_t N = 48000 / 4; //0.25 seconds at 48kHz
+	//C major chord arpeggio across three octaves (C3 E3 G3 ... C6):
+	const float freqs[] = {130.81f, 164.81f, 196.00f, 261.63f, 329.63f, 392.00f, 523.25f, 659.25f, 783.99f, 1046.50f};
 	for (float f : freqs) {
-		std::vector< float > data(N);
-		for (uint32_t i = 0; i < N; ++i) {
-			float t = float(i) / 48000.0f;
-			float env = std::exp(-12.0f * t);
-			data[i] = env * (0.6f * std::sin(2.0f * glm::pi< float >() * f * t)
-			               + 0.2f * std::sin(4.0f * glm::pi< float >() * f * t));
-		}
-		lane_samples.emplace_back(data);
+		note_samples.emplace_back(make_pluck(f));
 	}
 
 	//core profile requires a bound VAO even when drawing with zero attributes:
@@ -43,24 +57,46 @@ PlayMode::~PlayMode() {
 	glDeleteVertexArrays(1, &empty_vao);
 }
 
+Sound::Sample PlayMode::make_beat_sample() {
+	//kick drum: sine with a 150->50Hz pitch sweep and fast decay
+	constexpr uint32_t N = 48000 / 5; //0.2 seconds
+	std::vector< float > data(N);
+	const float f0 = 50.0f, f1 = 100.0f, k = 30.0f;
+	for (uint32_t i = 0; i < N; ++i) {
+		float t = float(i) / 48000.0f;
+		//phase is the integral of f0 + f1 * exp(-k * t):
+		float phase = 2.0f * glm::pi< float >() * (f0 * t + (f1 / k) * (1.0f - std::exp(-k * t)));
+		//tanh soft-clip at 2x gain: louder and punchier without hard clipping
+		data[i] = std::tanh(2.0f * std::exp(-12.0f * t) * std::sin(phase));
+	}
+	return Sound::Sample(data);
+}
+
 void PlayMode::spawn_ripple(glm::vec2 const &pos, float amp) {
 	ripples.push_back({pos, time, amp, hue_to_rgb(hue_dist(rng))});
 	if (ripples.size() > RippleProgram::MaxRipples) ripples.pop_front();
+
+	//x position picks the note from the grid; pan follows x:
+	uint32_t note = std::min(uint32_t(note_samples.size()) - 1, uint32_t(pos.x * float(note_samples.size())));
+	Sound::play(note_samples[note], 0.5f, pos.x * 2.0f - 1.0f);
 }
 
 bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size) {
 
 	if (evt.type == SDL_EVENT_KEY_DOWN) {
 		int lane = -1;
-		if (evt.key.key == SDLK_A) lane = 0;
-		else if (evt.key.key == SDLK_S) lane = 1;
-		else if (evt.key.key == SDLK_D) lane = 2;
-		else if (evt.key.key == SDLK_F) lane = 3;
-		if (lane >= 0) {
-			glm::vec2 pos((float(lane) + 0.5f) / 4.0f, 0.35f);
+		if (evt.key.key == SDLK_D) lane = 0;
+		else if (evt.key.key == SDLK_F) lane = 1;
+		else if (evt.key.key == SDLK_J) lane = 2;
+		else if (evt.key.key == SDLK_K) lane = 3;
+		else if (evt.key.key == SDLK_SPACE) {
+			//random position in the central half of the screen:
+			glm::vec2 pos(0.25f + 0.5f * hue_dist(rng), 0.25f + 0.5f * hue_dist(rng));
 			spawn_ripple(pos, 1.0f);
-			//pan follows lane position:
-			Sound::play(lane_samples[lane], 0.5f, pos.x * 2.0f - 1.0f);
+			return true;
+		}
+		if (lane >= 0) {
+			spawn_ripple(glm::vec2((float(lane) + 0.5f) / 4.0f, 0.35f), 1.0f);
 			return true;
 		}
 	} else if (evt.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
@@ -71,8 +107,6 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 		);
 		pos = glm::clamp(pos, 0.0f, 1.0f);
 		spawn_ripple(pos, 1.0f);
-		int lane = std::min(3, std::max(0, int(pos.x * 4.0f)));
-		Sound::play(lane_samples[lane], 0.5f, pos.x * 2.0f - 1.0f);
 		return true;
 	}
 
@@ -81,6 +115,13 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 
 void PlayMode::update(float elapsed) {
 	time += elapsed;
+
+	//metronome ticks every other beat (1.0s), '+=' so that extra time within one frame wont accumulate to the next tick
+	beat_timer -= elapsed;
+	if (beat_timer <= 0.0f) {
+		beat_timer += 2.0f * BeatInterval;
+		Sound::play(beat_sample, 1.0f);
+	}
 
 	//cull ripples that have faded to invisibility:
 	while (!ripples.empty() && time - ripples.front().t0 > 3.0f) {
