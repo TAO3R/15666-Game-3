@@ -1,8 +1,8 @@
 # (TODO: your game's title)
 
-Author: (TODO: your name)
+Author: (Tao Jin / tjin2)
 
-Design: (TODO: In two sentences or fewer, describe what is new and interesting about your game.)
+Design: (The game maps the screen space to 10 notes and mimics a guitar sound. Pressing the space key creates a pixel ripple in screen with notes that corresponds to the region that the center of the ripple is at.)
 
 Screen Shot:
 
@@ -10,6 +10,6 @@ Screen Shot:
 
 How To Play:
 
-(TODO: describe the controls and (if needed) goals/strategy.)
+(Try to mimic the pattern of notes that appear in every 8 beats. Each successful reproduce gives one point.)
 
 This game was built with [NEST](NEST.md).
