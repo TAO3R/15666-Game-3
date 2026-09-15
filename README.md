@@ -1,4 +1,4 @@
-# (TODO: your game's title)
+# (Press and Recreate)
 
 Author: (Tao Jin / tjin2)
 
