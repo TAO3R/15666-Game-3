@@ -1,12 +1,12 @@
 #include "Mode.hpp"
 
-#include "Scene.hpp"
+#include "RippleProgram.hpp"
 #include "Sound.hpp"
 
 #include <glm/glm.hpp>
 
-#include <vector>
 #include <deque>
+#include <vector>
 
 struct PlayMode : Mode {
 	PlayMode();
@@ -19,33 +19,21 @@ struct PlayMode : Mode {
 
 	//----- game state -----
 
-	//input tracking:
-	struct Button {
-		uint8_t downs = 0;
-		uint8_t pressed = 0;
-	} left, right, down, up;
+	//ripple effect state:
+	struct Ripple {
+		glm::vec2 pos; //0..1 screen-fraction coordinates, lower-left origin
+		float t0;      //spawn time in seconds (on the 'time' clock below)
+		float amp;     //brightness multiplier
+	};
+	std::deque< Ripple > ripples;
+	float time = 0.0f; //accumulated game time; drives the ripple shader
 
-	//local copy of the game scene (so code can change it during gameplay):
-	Scene scene;
+	void spawn_ripple(glm::vec2 const &pos, float amp);
 
-	//hexapod leg to wobble:
-	Scene::Transform *hip = nullptr;
-	Scene::Transform *upper_leg = nullptr;
-	Scene::Transform *lower_leg = nullptr;
-	glm::quat hip_base_rotation;
-	glm::quat upper_leg_base_rotation;
-	glm::quat lower_leg_base_rotation;
-	float wobble = 0.0f;
+	//ripple shader + empty vao needed for attribute-less full-screen drawing:
+	RippleProgram ripple_program;
+	GLuint empty_vao = 0;
 
-	glm::vec3 get_leg_tip_position();
-
-	//music coming from the tip of the leg (as a demonstration):
-	std::shared_ptr< Sound::PlayingSample > leg_tip_loop;
-
-	//car honk sound:
-	std::shared_ptr< Sound::PlayingSample > honk_oneshot;
-	
-	//camera:
-	Scene::Camera *camera = nullptr;
-
+	//procedurally generated key sounds, one per lane (no asset files needed):
+	std::vector< Sound::Sample > lane_samples;
 };
