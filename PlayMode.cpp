@@ -8,8 +8,20 @@
 #include <algorithm>
 #include <cmath>
 
-PlayMode::PlayMode() {
-	//procedurally generate a short beep per lane (C5 D5 E5 G5 -- pentatonic-ish, hard to make sound bad):
+namespace {
+
+//HSV(h, 1, 1) -> RGB for h in [0,1)
+glm::vec3 hue_to_rgb(float h) {
+	float r = std::abs(h * 6.0f - 3.0f) - 1.0f;
+	float g = 2.0f - std::abs(h * 6.0f - 2.0f);
+	float b = 2.0f - std::abs(h * 6.0f - 4.0f);
+	return glm::clamp(glm::vec3(r, g, b), 0.0f, 1.0f);
+}
+
+} //namespace
+
+PlayMode::PlayMode() : rng(std::random_device{}()) {
+	//procedurally generate a short beep per lane (C5 D5 E5 G5):
 	const float freqs[4] = {523.25f, 587.33f, 659.25f, 783.99f};
 	constexpr uint32_t N = 48000 / 4; //0.25 seconds at 48kHz
 	for (float f : freqs) {
@@ -32,7 +44,7 @@ PlayMode::~PlayMode() {
 }
 
 void PlayMode::spawn_ripple(glm::vec2 const &pos, float amp) {
-	ripples.push_back({pos, time, amp});
+	ripples.push_back({pos, time, amp, hue_to_rgb(hue_dist(rng))});
 	if (ripples.size() > RippleProgram::MaxRipples) ripples.pop_front();
 }
 
@@ -47,13 +59,12 @@ bool PlayMode::handle_event(SDL_Event const &evt, glm::uvec2 const &window_size)
 		if (lane >= 0) {
 			glm::vec2 pos((float(lane) + 0.5f) / 4.0f, 0.35f);
 			spawn_ripple(pos, 1.0f);
-			//pan follows lane position, so the sound stage matches the visuals:
+			//pan follows lane position:
 			Sound::play(lane_samples[lane], 0.5f, pos.x * 2.0f - 1.0f);
 			return true;
 		}
 	} else if (evt.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-		//SDL mouse coords are window layout pixels with upper-left origin;
-		// ripples want 0..1 fractions with lower-left origin:
+		//mouse position -> 0..1 fraction, lower-left origin:
 		glm::vec2 pos(
 			evt.button.x / float(window_size.x),
 			1.0f - evt.button.y / float(window_size.y)
@@ -87,18 +98,19 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 
 		glUniform2f(ripple_program.drawable_size_vec2, float(drawable_size.x), float(drawable_size.y));
 		glUniform1f(ripple_program.time_float, time);
-		glUniform3f(ripple_program.color_vec3, 0.2f, 1.0f, 0.9f);
 
 		uint32_t n = std::min< uint32_t >(RippleProgram::MaxRipples, uint32_t(ripples.size()));
 		glm::vec2 centers[RippleProgram::MaxRipples];
 		float starts[RippleProgram::MaxRipples];
 		float amps[RippleProgram::MaxRipples];
+		glm::vec3 colors[RippleProgram::MaxRipples];
 		uint32_t i = 0;
 		for (Ripple const &r : ripples) {
 			if (i >= n) break;
 			centers[i] = r.pos;
 			starts[i] = r.t0;
 			amps[i] = r.amp;
+			colors[i] = r.color;
 			++i;
 		}
 		glUniform1i(ripple_program.ripple_count_int, GLint(i));
@@ -106,6 +118,7 @@ void PlayMode::draw(glm::uvec2 const &drawable_size) {
 			glUniform2fv(ripple_program.ripple_center_vec2, GLsizei(i), glm::value_ptr(centers[0]));
 			glUniform1fv(ripple_program.ripple_start_float, GLsizei(i), starts);
 			glUniform1fv(ripple_program.ripple_amp_float, GLsizei(i), amps);
+			glUniform3fv(ripple_program.ripple_color_vec3, GLsizei(i), glm::value_ptr(colors[0]));
 		}
 
 		glBindVertexArray(empty_vao);

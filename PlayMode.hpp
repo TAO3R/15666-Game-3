@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 
 #include <deque>
+#include <random>
 #include <vector>
 
 struct PlayMode : Mode {
@@ -21,12 +22,16 @@ struct PlayMode : Mode {
 
 	//ripple effect state:
 	struct Ripple {
-		glm::vec2 pos; //0..1 screen-fraction coordinates, lower-left origin
-		float t0;      //spawn time in seconds (on the 'time' clock below)
-		float amp;     //brightness multiplier
+		glm::vec2 pos;   //0..1 screen-fraction coordinates, lower-left origin
+		float t0;        //spawn time in seconds (on the 'time' clock below)
+		float amp;       //brightness multiplier
+		glm::vec3 color; //assigned at spawn
 	};
 	std::deque< Ripple > ripples;
 	float time = 0.0f; //accumulated game time; drives the ripple shader
+
+	std::mt19937 rng;
+	std::uniform_real_distribution< float > hue_dist{0.0f, 1.0f};
 
 	void spawn_ripple(glm::vec2 const &pos, float amp);
 

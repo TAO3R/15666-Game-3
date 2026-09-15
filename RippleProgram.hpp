@@ -23,5 +23,5 @@ struct RippleProgram {
 	GLuint ripple_center_vec2 = 0; //array of MaxRipples vec2, 0..1 screen-fraction coords, lower-left origin
 	GLuint ripple_start_float = 0; //array of MaxRipples float, spawn time in seconds
 	GLuint ripple_amp_float = 0;   //array of MaxRipples float, brightness multiplier
-	GLuint color_vec3 = 0;
+	GLuint ripple_color_vec3 = 0;  //array of MaxRipples vec3, per-ripple color
 };
